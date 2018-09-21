@@ -54,24 +54,25 @@ func SingleHash(in, out chan interface{}) {
 }
 
 // расчитывает crc32(data) + crc32(md5(data))
-func countSingleHash(data interface{}, out chan interface{}, wSingleHash *sync.WaitGroup, mdMutex *sync.Mutex) {
+func countSingleHash(data string, out chan interface{}, 
+						wSingleHash *sync.WaitGroup, mdMutex *sync.Mutex) {
 	defer wSingleHash.Done()
 
-	crcCh := make(chan interface{}, 1)
+	crcCh := make(chan string, 1)
 	// расчет crc(data)  в отдельной горутине
 	go coverCrc(crcCh, data)
 
 	mdMutex.Lock()
-	mdData := DataSignerMd5(data.(string))
+	mdData := DataSignerMd5(data)
 	mdMutex.Unlock()
 	crcMdData := DataSignerCrc32(mdData)
 	crcData := <-crcCh
-	out <- (crcData.(string) + "~" + crcMdData)
+	out <- (crcData + "~" + crcMdData)
 }
 
 // обертка над DataSignerCrc32 для запуска в отдельной горутине
-func coverCrc(crcCh chan<- interface{}, data interface{}) {
-	crcCh <- DataSignerCrc32(data.(string))
+func coverCrc(crcCh chan<- string, data string) {
+	crcCh <- DataSignerCrc32(data)
 }
 
 // расчитывает crc32(th + data)
@@ -87,33 +88,40 @@ func MultiHash(in, out chan interface{}) {
 func countMultiHash(data string, out chan interface{}, wMultiHach *sync.WaitGroup) {
 	defer wMultiHach.Done()
 
+	th := 6;
 	// группа для ожидания завершения расчета crc(th + data), th = 0..5
 	wTh := &sync.WaitGroup{}
-	ch := make(chan interface{}, 6)
-	salt := "012345"
+	dataCh := make(chan string, 6)
+	numberCh := make(chan int, 6)
+	mutex := &sync.Mutex{}
 
-	for _, char := range salt {
+
+	for i := 0; i < th; i++ {
 		wTh.Add(1)
-		go coverCrcWaitGroup(string(char), data, ch, wTh)
+		go coverCrcWaitGroup(i, data, dataCh, numberCh, mutex, wTh)
 	}
 	wTh.Wait()
 
-	slice := make([]string, len(salt), len(salt))
-	for _ = range salt {
-		data := <-ch
-		// использую первый символ для определения порядка данных
-		index, _ := strconv.Atoi(string(data.(string)[0]))
-		slice[index] = (data.(string)[1:])
+	slice := make([]string, th, th)
+	for i := 0; i < th; i++ {
+		data := <-dataCh
+		number := <-numberCh
+		slice[number] = data
 	}
 
 	out <- strings.Join(slice, "")
 }
 
 // обертка над DataSignerCrc32 для запуска в отдельной горутине с waitGroup
-func coverCrcWaitGroup(char string, data interface{}, out chan interface{}, wTh *sync.WaitGroup) {
+func coverCrcWaitGroup(number int, data string, dataCh chan<- string,
+					 numberCh chan<- int, mutex *sync.Mutex, wTh *sync.WaitGroup) {
 	defer wTh.Done()
-	// добавляю char(номер горутины) для определение правильной последовательности
-	out <- char + DataSignerCrc32(char+data.(string))
+
+	outData := DataSignerCrc32(strconv.Itoa(number)+data)
+	mutex.Lock()
+	dataCh <- outData
+	numberCh <- number
+	mutex.Unlock()
 }
 
 func CombineResults(in, out chan interface{}) {
